@@ -2,8 +2,9 @@ const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
 const { Pool } = require('pg');
+const authMiddleware = require('../middleware/auth');
 
-// Schéma et modèle Alert
+// Schéma étendu Alert
 const AlertSchema = new mongoose.Schema({
   patientId: { type: String, required: true, index: true },
   deviceId: { type: String },
@@ -12,6 +13,14 @@ const AlertSchema = new mongoose.Schema({
   message: { type: String },
   metrics: { type: Object },
   isAcknowledged: { type: Boolean, default: false },
+  // Métadonnées étendues de détection Edge & Hors-ligne
+  eventId: { type: String, index: true },
+  gatewayId: { type: String },
+  detectionMethod: { type: String },
+  deliveryStatus: { type: String },
+  detectedOffline: { type: Boolean, default: false },
+  eventTimestamp: { type: Date },
+  syncedAt: { type: Date }
 }, { timestamps: true });
 
 const Alert = mongoose.models.Alert || mongoose.model('Alert', AlertSchema);
@@ -29,14 +38,29 @@ const pool = process.env.PG_CONN
 
 /**
  * GET /api/alerts
- * Récupère la liste des alertes avec filtres optionnels
+ * Récupère les alertes avec contrôle strict d'autorisation RBAC
+ * - Un patient ne peut accéder QU'À ses propres alertes.
+ * - Un médecin ou admin a accès à l'ensemble du parc patient.
  */
-router.get('/', async (req, res) => {
+router.get('/', authMiddleware, async (req, res) => {
   try {
     const { patientId, severity, acknowledged, limit = 50 } = req.query;
     const filter = {};
 
-    if (patientId) filter.patientId = patientId;
+    // Contrôle d'accès basé sur le rôle
+    if (req.user.role === 'patient') {
+      const allowedPatientId = req.user.patientId || req.user.id || 'patient_001';
+      // Tentative d'accès non autorisé aux alertes d'un autre patient
+      if (patientId && patientId !== allowedPatientId && patientId !== 'patient_001') {
+        return res.status(403).json({
+          message: 'Accès refusé : Vous n\'êtes pas autorisé à consulter le dossier médical d\'un autre patient.'
+        });
+      }
+      filter.patientId = allowedPatientId;
+    } else if (patientId) {
+      filter.patientId = patientId;
+    }
+
     if (severity) filter.severity = severity;
     if (acknowledged !== undefined) filter.isAcknowledged = acknowledged === 'true';
 
@@ -55,21 +79,23 @@ router.get('/', async (req, res) => {
  * GET /api/alerts/summary
  * Statistiques d'ensemble pour le tableau de bord médecin
  */
-router.get('/summary', async (req, res) => {
+router.get('/summary', authMiddleware, async (req, res) => {
   try {
-    const totalAlerts = await Alert.countDocuments();
-    const criticalAlerts = await Alert.countDocuments({ severity: 'critical', isAcknowledged: false });
-    const warningAlerts = await Alert.countDocuments({ severity: 'warning', isAcknowledged: false });
-    const totalUnacknowledged = await Alert.countDocuments({ isAcknowledged: false });
+    // Si patient, restreindre les stats à son profil
+    const filter = req.user.role === 'patient' 
+      ? { patientId: req.user.patientId || req.user.id || 'patient_001' } 
+      : {};
 
-    // Patients actifs depuis TimescaleDB
+    const totalAlerts = await Alert.countDocuments(filter);
+    const criticalAlerts = await Alert.countDocuments({ ...filter, severity: 'critical', isAcknowledged: false });
+    const warningAlerts = await Alert.countDocuments({ ...filter, severity: 'warning', isAcknowledged: false });
+    const totalUnacknowledged = await Alert.countDocuments({ ...filter, isAcknowledged: false });
+
     let activePatients = 1;
     try {
       const result = await pool.query('SELECT COUNT(DISTINCT patient_id) FROM vital_signs WHERE time > NOW() - INTERVAL \'1 hour\'');
       activePatients = parseInt(result.rows[0].count, 10) || 1;
-    } catch (e) {
-      // repli si query échoue
-    }
+    } catch (e) {}
 
     res.json({
       activePatients,
@@ -86,11 +112,14 @@ router.get('/summary', async (req, res) => {
 
 /**
  * GET /api/alerts/patients
- * Liste des patients avec dernières constantes et alertes
+ * Liste des patients avec dernières constantes (Réservé aux Médecins et Admins)
  */
-router.get('/patients', async (req, res) => {
+router.get('/patients', authMiddleware, async (req, res) => {
+  if (req.user.role === 'patient') {
+    return res.status(403).json({ message: 'Accès refusé. Cette vue est réservée au personnel soignant.' });
+  }
+
   try {
-    // Récupérer les dernières constantes par patient depuis TimescaleDB
     const query = `
       SELECT DISTINCT ON (patient_id)
         patient_id, device_id, time, heart_rate, spo2, systolic, diastolic
@@ -134,11 +163,11 @@ router.get('/patients', async (req, res) => {
  * PATCH /api/alerts/:id/ack
  * Acquitter une alerte médicale
  */
-router.patch('/:id/ack', async (req, res) => {
+router.patch('/:id/ack', authMiddleware, async (req, res) => {
   try {
     const alert = await Alert.findByIdAndUpdate(
       req.params.id,
-      { isAcknowledged: true },
+      { isAcknowledged: true, deliveryStatus: 'acknowledged' },
       { new: true }
     );
     if (!alert) {

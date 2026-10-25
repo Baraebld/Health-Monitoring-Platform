@@ -16,6 +16,7 @@ const swaggerUi = require('swagger-ui-express');
 const authRoutes = require('./routes/auth');
 const vitalsRoutes = require('./routes/vitals');
 const alertsRoutes = require('./routes/alerts');
+const edgeRoutes = require('./routes/edge');
 
 // Importer le middleware EXISTANT
 const authMiddleware = require('./middleware/auth');
@@ -31,6 +32,7 @@ const io = new Server(server, {
     methods: ["GET", "POST"]
   }
 });
+app.set('socketio', io);
 
 // Connexion à MongoDB
 const connectDB = async () => {
@@ -135,6 +137,9 @@ app.use('/api/vitals', vitalsRoutes);
 
 // Route pour les alertes médicales et la supervision médecin
 app.use('/api/alerts', alertsRoutes);
+
+// Route pour la passerelle Edge (synchronisation autonome et statut passerelle)
+app.use('/api/edge', edgeRoutes);
 
 // Route protégée pour récupérer le profil utilisateur (DANS ce fichier)
 /**

@@ -10,8 +10,10 @@ const SOCKET_URL = 'http://localhost:3000';
 
 interface AlertItem {
   _id: string;
+  eventId?: string;
   patientId: string;
   deviceId?: string;
+  gatewayId?: string;
   type: string;
   severity: 'info' | 'warning' | 'critical';
   message: string;
@@ -23,8 +25,20 @@ interface AlertItem {
       diastolic?: number;
     };
   };
+  detectionMethod?: string;
+  deliveryStatus?: string;
+  detectedOffline?: boolean;
+  eventTimestamp?: string;
+  syncedAt?: string;
   isAcknowledged: boolean;
   createdAt: string;
+}
+
+interface EdgeGatewayInfo {
+  gatewayId: string;
+  lastSync: string;
+  isOnline: boolean;
+  silenceSeconds: number;
 }
 
 interface PatientOverview {
@@ -73,18 +87,26 @@ const DoctorDashboardPage: React.FC = () => {
   const [filterSeverity, setFilterSeverity] = useState<string>('all');
   const [onlyUnack, setOnlyUnack] = useState<boolean>(false);
   const [socketConnected, setSocketConnected] = useState<boolean>(false);
+  const [edgeGateways, setEdgeGateways] = useState<EdgeGatewayInfo[]>([]);
 
   // Charger les alertes initiales et stats
   const fetchDashboardData = async () => {
     try {
-      const [alertsRes, statsRes, patientsRes] = await Promise.all([
-        axios.get<AlertItem[]>(`${API_BASE_URL}/alerts?limit=50`),
-        axios.get<SummaryStats>(`${API_BASE_URL}/alerts/summary`),
-        axios.get<PatientOverview[]>(`${API_BASE_URL}/alerts/patients`),
+      const token = localStorage.getItem('token');
+      const authHeader = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
+
+      const [alertsRes, statsRes, patientsRes, edgeRes] = await Promise.all([
+        axios.get<AlertItem[]>(`${API_BASE_URL}/alerts?limit=50`, authHeader),
+        axios.get<SummaryStats>(`${API_BASE_URL}/alerts/summary`, authHeader),
+        axios.get<PatientOverview[]>(`${API_BASE_URL}/alerts/patients`, authHeader),
+        axios.get<{ gateways: EdgeGatewayInfo[] }>(`${API_BASE_URL}/edge/status`, authHeader).catch(() => ({ data: { gateways: [] } }))
       ]);
 
       setAlerts(alertsRes.data);
       setStats(statsRes.data);
+      if (edgeRes?.data?.gateways) {
+        setEdgeGateways(edgeRes.data.gateways);
+      }
       if (patientsRes.data.length > 0) {
         setPatients(patientsRes.data);
       } else {
@@ -181,7 +203,9 @@ const DoctorDashboardPage: React.FC = () => {
   // Acquitter une alerte
   const handleAcknowledge = async (alertId: string) => {
     try {
-      await axios.patch(`${API_BASE_URL}/alerts/${alertId}/ack`);
+      const token = localStorage.getItem('token');
+      const authHeader = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
+      await axios.patch(`${API_BASE_URL}/alerts/${alertId}/ack`, {}, authHeader);
       setAlerts((prev) =>
         prev.map((a) => (a._id === alertId ? { ...a, isAcknowledged: true } : a))
       );
@@ -224,6 +248,20 @@ const DoctorDashboardPage: React.FC = () => {
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
+          {/* Statut Passerelle Edge RPi */}
+          <div className="flex items-center space-x-2 bg-gray-900 px-3 py-1.5 rounded-full border border-gray-800">
+            <span
+              className={`w-3 h-3 rounded-full ${
+                edgeGateways.some(g => g.isOnline) ? 'bg-purple-500 animate-pulse' : 'bg-gray-600'
+              }`}
+            />
+            <span className="text-xs text-gray-300 font-medium">
+              {edgeGateways.length > 0 && edgeGateways.some(g => g.isOnline)
+                ? `Edge RPi : Connectée (Sync ${new Date(edgeGateways[0].lastSync).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`
+                : 'Edge RPi : Autonome'}
+            </span>
+          </div>
+
           <div className="flex items-center space-x-2 bg-gray-900 px-3 py-1.5 rounded-full border border-gray-800">
             <span
               className={`w-3 h-3 rounded-full ${
@@ -458,6 +496,7 @@ const DoctorDashboardPage: React.FC = () => {
             <thead className="bg-gray-800/60 text-gray-400 uppercase tracking-wider font-semibold">
               <tr>
                 <th className="p-3">Horodatage</th>
+                <th className="p-3">Origine & SMS</th>
                 <th className="p-3">Patient</th>
                 <th className="p-3">Sévérité</th>
                 <th className="p-3">Type & Message</th>
@@ -469,7 +508,7 @@ const DoctorDashboardPage: React.FC = () => {
             <tbody className="divide-y divide-gray-800">
               {filteredAlerts.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="p-6 text-center text-gray-500">
+                  <td colSpan={8} className="p-6 text-center text-gray-500">
                     Aucune alerte clinique ne correspond aux critères sélectionnés.
                   </td>
                 </tr>
@@ -477,9 +516,49 @@ const DoctorDashboardPage: React.FC = () => {
                 filteredAlerts.map((alert) => (
                   <tr key={alert._id} className="hover:bg-gray-800/30 transition">
                     <td className="p-3 font-mono text-gray-400">
-                      {new Date(alert.createdAt).toLocaleTimeString()}
+                      {new Date(alert.eventTimestamp || alert.createdAt).toLocaleTimeString()}
                       <div className="text-[10px] text-gray-500">
-                        {new Date(alert.createdAt).toLocaleDateString()}
+                        {new Date(alert.eventTimestamp || alert.createdAt).toLocaleDateString()}
+                      </div>
+                      {alert.syncedAt && (
+                        <div className="text-[9px] text-blue-400/80 font-sans">
+                          Sync: {new Date(alert.syncedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </div>
+                      )}
+                    </td>
+
+                    <td className="p-3">
+                      <div className="flex flex-col gap-1 items-start">
+                        {alert.detectedOffline ? (
+                          <span className="inline-block bg-purple-500/20 text-purple-300 border border-purple-500/30 px-1.5 py-0.5 rounded text-[10px] font-semibold">
+                            Edge RPi
+                          </span>
+                        ) : (
+                          <span className="inline-block bg-blue-500/20 text-blue-300 border border-blue-500/30 px-1.5 py-0.5 rounded text-[10px] font-semibold">
+                            Cloud
+                          </span>
+                        )}
+
+                        {alert.deliveryStatus === 'accepted_by_modem' && (
+                          <span className="text-[10px] text-emerald-400 flex items-center gap-1 font-medium">
+                            <span>📱</span> SMS Transmis
+                          </span>
+                        )}
+                        {alert.deliveryStatus === 'accepted_by_mock_transport' && (
+                          <span className="text-[10px] text-cyan-400 flex items-center gap-1 font-medium">
+                            <span>🧪</span> SMS Mock
+                          </span>
+                        )}
+                        {alert.deliveryStatus === 'failed' && (
+                          <span className="text-[10px] text-red-400 flex items-center gap-1 font-medium">
+                            <span>❌</span> SMS Échoué
+                          </span>
+                        )}
+                        {alert.deliveryStatus === 'debounced' && (
+                          <span className="text-[10px] text-amber-400 flex items-center gap-1 font-medium">
+                            <span>⏳</span> Anti-Spam
+                          </span>
+                        )}
                       </div>
                     </td>
 

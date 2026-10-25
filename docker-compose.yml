@@ -116,6 +116,27 @@ services:
     networks:
       - health-net
 
+  # Passerelle Autonome Edge (Simulation Raspberry Pi)
+  edge-gateway:
+    build:
+      context: ./edge-gateway
+      dockerfile: Dockerfile
+    container_name: health-edge-gateway
+    restart: always
+    environment:
+      EDGE_GATEWAY_ID: edge_rpi_gateway_01
+      EDGE_PORT: 3001
+      CENTRAL_BACKEND_URL: http://api-gateway:3000
+      SMS_TRANSPORT: mock
+      DOCTOR_PHONE_NUMBER: +33612345678
+      EDGE_SYNC_API_KEY: edge_secret_token_pfe_2026
+    ports:
+      - "3001:3001"
+    volumes:
+      - edge_data:/app/data
+    networks:
+      - health-net
+
   # Frontend Web React + Vite
   frontend:
     build:
@@ -138,3 +159,4 @@ volumes:
   mongo_data:
   timescale_data:
   redis_data:
+  edge_data:
