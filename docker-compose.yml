@@ -1,0 +1,140 @@
+version: '3.8'
+
+services:
+  # Base de données NoSQL MongoDB (Utilisateurs et Alertes)
+  mongo:
+    image: mongo:7
+    container_name: health-mongo
+    restart: always
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - health-net
+
+  # Base de données Time-Series TimescaleDB (Métriques vitales)
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: health-timescaledb
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: timescale
+    ports:
+      - "5432:5432"
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+      - ./init-db:/docker-entrypoint-initdb.d
+    networks:
+      - health-net
+
+  # Message Broker Redis Pub/Sub
+  redis:
+    image: redis:7-alpine
+    container_name: health-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - health-net
+
+  # Microservice Machine Learning (Flask + Isolation Forest)
+  ml-service:
+    build:
+      context: ./ml-service
+      dockerfile: Dockerfile
+    container_name: health-ml-service
+    restart: always
+    ports:
+      - "5000:5000"
+    networks:
+      - health-net
+
+  # API Gateway & WebSocket Server
+  api-gateway:
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    container_name: health-api-gateway
+    restart: always
+    environment:
+      PORT: 3000
+      MONGO_URI: mongodb://mongo:27017/healthdb
+      DB_HOST: timescaledb
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: timescale
+      REDIS_URI: redis://redis:6379
+      VITALS_CHANNEL: vitals-channel
+      ALERTS_CHANNEL: alerts-channel
+      JWT_SECRET: supersecretjwtkeypfe2025
+    ports:
+      - "3000:3000"
+    depends_on:
+      - mongo
+      - timescaledb
+      - redis
+    networks:
+      - health-net
+
+  # Moteur d'Alertes Intelligent
+  alert-engine:
+    build:
+      context: ./alert-engine
+      dockerfile: Dockerfile
+    container_name: health-alert-engine
+    restart: always
+    environment:
+      MONGO_URI: mongodb://mongo:27017/healthdb
+      REDIS_URI: redis://redis:6379
+      ML_SERVICE_URL: http://ml-service:5000/predict
+      VITALS_CHANNEL: vitals-channel
+      ALERTS_CHANNEL: alerts-channel
+    depends_on:
+      - mongo
+      - redis
+      - ml-service
+    networks:
+      - health-net
+
+  # Simulateur d'Objets Connectés IoMT
+  device-simulator:
+    build:
+      context: ./device-simulator
+      dockerfile: Dockerfile
+    container_name: health-device-simulator
+    restart: always
+    environment:
+      API_URL: http://api-gateway:3000
+    depends_on:
+      - api-gateway
+    networks:
+      - health-net
+
+  # Frontend Web React + Vite
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: health-frontend
+    restart: always
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api-gateway
+    networks:
+      - health-net
+
+networks:
+  health-net:
+    driver: bridge
+
+volumes:
+  mongo_data:
+  timescale_data:
+  redis_data:

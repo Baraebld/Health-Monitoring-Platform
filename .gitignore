@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+/frontend/node_modules/
+/api-gateway/node_modules/
+/device-simulator/node_modules/
+/alert-engine/node_modules/
+/ml-service/__pycache__/
+/ml-service/venv/ # Si tu utilises un venv localement
+
+# Build Outputs
+/frontend/dist/
+
+# Environment & Secrets
+.env
+!.env.example
+*.log
+.DS_Store
+Thumbs.db
+
+# IDE settings
+.vscode/
+.idea/
+
+# ML Model (Optionnel - si trop gros)
+# /ml-service/models/*.pkl
